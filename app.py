@@ -33,6 +33,6 @@ with st.sidebar:
         index=list(automates.keys()).index(default_app),
         key="selected_automation_selectbox"
     )
-
+    
 
 automates[selected]()
