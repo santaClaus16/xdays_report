@@ -2,12 +2,13 @@ import streamlit as st
 import webbrowser
 from automations.drr_cleaning.drr import drr_cleaning_app;
 from automations.daily_remarks_report.drr_automate import drr_automate;
-
+from automations.worklist_report.worklist import worklist
 
 
 automates = {
     "DRR CLEANER":drr_cleaning_app,
-    "DRR AUTOMATE": drr_automate
+    "DRR AUTOMATE": drr_automate,
+    "WORKLIST": worklist
 
 }
 
