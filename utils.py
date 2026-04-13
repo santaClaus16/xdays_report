@@ -4,7 +4,6 @@ import pandas as pd
 import os
 from datetime import datetime
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Clean account number column
 # ─────────────────────────────────────────────────────────────────────────────
@@ -74,7 +73,7 @@ def load_mapping_file(path: str):
             standard_order.append(std)
             if aliases:
                 rules["mapping"][std] = aliases
-                logs.append(f"✅ Mapping '{std}' ← {aliases}")
+                logs.append(f"✅ Mapped '{std}' ← {aliases}")
             else:
                 logs.append(f"✅ Standard column added: '{std}' (header only)")
 
@@ -114,6 +113,11 @@ def apply_header_mapping(df: pd.DataFrame, mapping: dict, standard_order: list):
         for alias in aliases:
             reverse[alias.lower()] = std
         reverse[std.lower()] = std
+    
+        # ✅ Add header-only standards (those with no aliases)
+    for std in standard_order:
+        if std.lower() not in reverse:
+            reverse[std.lower()] = std
 
     rename_map = {}
     for col in df.columns:
@@ -139,6 +143,7 @@ def apply_header_mapping(df: pd.DataFrame, mapping: dict, standard_order: list):
 # 4. Apply cleaning rules
 # ─────────────────────────────────────────────────────────────────────────────
 def apply_cleaning(df: pd.DataFrame, cleaning: dict):
+    
     """
     Deletes rows that match cleaning rules.
 
@@ -264,3 +269,16 @@ def save_to_folder(output_dir: str, folder_name: str, files: dict, timestamp: st
         df.to_excel(file_path, index=False, engine="openpyxl")
 
     return folder_path
+
+
+
+def force_columns_to_str(df, columns):
+    for col in columns:
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .fillna("")
+                .astype(str)
+                .str.replace(r"\.0$", "", regex=True)
+            )
+    return df

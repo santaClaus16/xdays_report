@@ -21,8 +21,8 @@ from utils import (
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="DataFlow Cleaner", page_icon="⚡", layout="wide")
 
-MAPPING_PATH = r"C:\Users\SOLIZA\Documents\secret\mapping\mapping_file.xlsx"
-OUTPUT_DIR   = r"C:\Users\SOLIZA\Documents\secret\clean_drr"
+MAPPING_PATH_DRR = r"C:\Users\SPM\Desktop\eod_report\mapping\mapping_file.xlsx"
+OUTPUT_DIR   = r"clean_drr/04-12-2026_1902 - CLEAN DRR"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main App
@@ -32,7 +32,7 @@ def drr_cleaning_app():
     st.caption("Chunked processing + ETA + Memory optimization | Best for 100k–500k rows")
 
     # ── Load mapping ──────────────────────────────────────────────────────────
-    rules, load_logs, standard_order = load_mapping_file(MAPPING_PATH)
+    rules, load_logs, standard_order = load_mapping_file(MAPPING_PATH_DRR)
 
     if any("❌" in log for log in load_logs):
         st.error("Mapping file error")
