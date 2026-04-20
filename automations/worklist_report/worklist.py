@@ -4,6 +4,11 @@ import msoffcrypto
 import re
 from io import BytesIO
 from datetime import datetime
+import pyodbc
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from utils import (
     load_mapping_file,
@@ -14,211 +19,249 @@ from utils import (
     force_columns_to_str,
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Constants
-# ─────────────────────────────────────────────────────────────────────────────
-MAPPING_PATH_WL = r"C:\Users\SPM\Desktop\eod_report\mapping\mapping_file_wl.xlsx"
-OUTPUT_FOLDER = r"C:\Users\SPM\Desktop\eod_report\clean_wl"
+st.set_page_config(page_title="Worklist Decrypter + Mapper", layout="wide")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main App
-# ─────────────────────────────────────────────────────────────────────────────
+
+def decrypt_file(file_bytes, password):
+    """Helper function to decrypt msoffcrypto file"""
+    try:
+        decrypted = BytesIO()
+        office_file = msoffcrypto.OfficeFile(BytesIO(file_bytes))
+        office_file.load_key(password=password)
+        office_file.decrypt(decrypted)
+        decrypted.seek(0)
+        return decrypted, None
+    except msoffcrypto.exceptions.DecryptionError:
+        return None, "Wrong password"
+    except Exception as e:
+        return None, str(e)
+
+
 def worklist_app():
-    st.set_page_config(page_title="Worklist Decrypter + Mapper", layout="wide")
-    st.title("🔓 Worklist Decrypter + Advanced Column Mapper")
-    st.markdown("Decrypts `c9`, `c14`, `c15`... files + Applies mapping from **mapping_file_wl.xlsx**")
+    # ================== Database Connection ==================
+    try:
+        conn_str = (
+            f"DRIVER={{{os.getenv('DB_DRIVER')}}};"
+            f"SERVER={os.getenv('DB_HOST')};"
+            f"DATABASE={os.getenv('DB_NAME')};"
+            f"UID={os.getenv('DB_USER')};"
+            f"PWD={os.getenv('DB_PASS')};"
+        )
+        conn = pyodbc.connect(conn_str)
+        st.success("✅ Successfully connected to the database!")
+    except Exception as e:
+        st.error(f"❌ Failed to connect to the database: {e}")
+        st.stop()
 
-    # ── Load mapping ──────────────────────────────────────────────────────────
+    # ================== Constants & Mapping ==================
+    MAPPING_PATH_WL = r"C:\Users\SPM\Desktop\eod_report\mapping\mapping_file_wl.xlsx"
+    OUTPUT_FOLDER = r"C:\Users\SPM\Desktop\eod_report\clean_wl"
+
     rules, load_logs, standard_order = load_mapping_file(MAPPING_PATH_WL)
 
     if any("❌" in log for log in load_logs):
-        st.error("Mapping file issue")
-        log_df = pd.DataFrame(load_logs, columns=["Mapping Load Logs"])
-        st.dataframe(log_df, height=300, use_container_width=True, hide_index=True)
+        st.error("❌ Mapping file issue")
+        st.dataframe(pd.DataFrame(load_logs, columns=["Mapping Load Logs"]), use_container_width=True)
         st.stop()
     else:
         st.sidebar.success("✅ Mapping loaded successfully")
-        with st.sidebar.expander(f"Mapping Preview (**{len(load_logs)}**)", expanded=False):
-            preview_df = pd.DataFrame(load_logs[:20], columns=["Mapping Load Logs"])
-            st.dataframe(preview_df, height=250, use_container_width=True, hide_index=True)
-
-    # ── File upload ───────────────────────────────────────────────────────────
-    uploaded_files = st.file_uploader(
-        "Upload Worklist Files (c9 Worklist..., c14 Worklist..., etc.)",
+    
+    sheet_default = ["ActiveQry", "Active_updt", "Pulled Out","!!DNC!!"]
+        
+    with st.sidebar:
+        # Dropdown for sheet selection
+        selected_sheet = st.selectbox(
+            "Select a sheet",
+            sheet_default
+        )
+        
+        selected_header = st.selectbox(
+            "Select a sheet",
+            [1,2,3]
+        )
+        
+    upload_file_template = st.file_uploader(
+        "Upload your worklist template here",
         type=["xlsx"],
-        accept_multiple_files=True
+        help="You can upload multiple files at once. The system will attempt to auto-decrypt using the cycle-based password format."
     )
+    
+    if upload_file_template is not None:
+        # Load Excel file
+        excel_file = pd.ExcelFile(upload_file_template)
+  
 
-    if not uploaded_files:
-        st.info("👆 Upload your password-protected worklist files to begin.")
-        st.caption("Decryption: CYCLE_9* • Mapping from mapping_file_wl.xlsx")
-        return
+        # Read selected sheet (header = row 2)
+        df = pd.read_excel(
+            excel_file,
+            sheet_name=selected_sheet,
+            header=selected_header
+        )
+        with st.expander(f"🔍 Preview of '{selected_sheet}' with header row {selected_header}", expanded=True):
+            st.dataframe(df)
 
-    # ── Process each file ─────────────────────────────────────────────────────
-    results = []
-    all_dfs = []   # For combining later
+        # ================== File Upload ==================
+        uploaded_files = st.file_uploader(
+            "Upload Worklist Files (c9, c14, c15, etc.)",
+            type=["xlsx"],
+            accept_multiple_files=True
+        )
 
-    for i, uploaded_file in enumerate(uploaded_files):
-        filename = uploaded_file.name
+        if not uploaded_files:
+            st.info("👆 Upload your password-protected worklist files to begin.")
+            return
 
-        match = re.search(r'[cC](\d+)', filename)
-        if not match:
-            st.error(f"❌ Could not find cycle number in: **{filename}**")
-            continue
+        results = []
+        all_dfs = []
 
-        c_number = match.group(1)
-        password = f"CYCLE_{c_number}*"
+        for i, uploaded_file in enumerate(uploaded_files):
+            filename = uploaded_file.name
 
-        with st.container(border=True):
-            with st.expander(f"📁 Processing: {filename}", expanded=True):
-                st.subheader(f"📄 {filename}")
-                status_container = st.container()
+            match = re.search(r'[cC](\d+)', filename)
+            if not match:
+                st.error(f"❌ Could not find cycle number in: **{filename}**")
+                continue
 
-                try:
-                    with status_container:
-                        st.info(f"🔄 Decrypting → Password: `{password}`")
+            c_number = match.group(1)
+            auto_password = f"CYCLE_{c_number}*"
 
-                    # Decrypt
+            with st.container(border=True):
+                with st.expander(f"📁 Processing: {filename}", expanded=True):
+                    st.subheader(f"📄 {filename}")
+                    status = st.container()
+
                     file_bytes = uploaded_file.read()
-                    decrypted = BytesIO()
-                    office_file = msoffcrypto.OfficeFile(BytesIO(file_bytes))
-                    office_file.load_key(password=password)
-                    office_file.decrypt(decrypted)
-                    decrypted.seek(0)
 
-                    df = pd.read_excel(decrypted, dtype=str, engine="openpyxl")
+                    decrypted_io = None
 
-                    with status_container:
-                        st.success(f"✅ Decrypted — {df.shape[0]:,} rows × {df.shape[1]} columns")
+                    # ====================== Try Auto Password ======================
+                    with status:
+                        st.info(f"🔄 Trying automatic password: `{auto_password}`")
 
-                    # Force string columns
-                    WL_STR_COLS = [
-                        "CUST_ID", "OFFICE_PH", "HOME_PH", "MOBILE_NO",
-                        "OB", "BOS", "AOD", "MAD", "PDA", "LPA", "PTP_AMT"
-                    ]
-                    df = force_columns_to_str(df, WL_STR_COLS)
+                    decrypted_io, error = decrypt_file(file_bytes, auto_password)
 
-                    # Date formatting
-                    WL_DATE_COLS = [
-                        "LAST_PAYMENT_DATE", "PTP_DATE", "BIRTHDATE",
-                        "LAST_DUE_DATE", "D_CUST_OPN", "Birthdate"
-                    ]
-                    df = format_date_columns(df, date_cols=WL_DATE_COLS)
+                    if decrypted_io is None:
+                        if "Wrong password" in error.lower():
+                            st.toast("❌ **Wrong Password!**", icon="🚫")
+                            st.error(f"❌ Wrong password for **{filename}**")
+                            st.warning(f"Automatic password `{auto_password}` did not work.")
+                        else:
+                            st.toast("⚠️ Decryption Error", icon="⚠️")
+                            st.error(f"Decryption failed: {error}")
 
-                    # Clean account numbers
-                    df = clean_account_number_column(df, show_success=(i == 0), st=st)
+                        # ====================== Manual Password Input ======================
+                        st.markdown("### 🔓 Enter Correct Password Manually")
 
-                    # Apply mapping
-                    df, map_logs = apply_header_mapping(df, rules["mapping"], standard_order)
-
-                    # Handle COLLECTION_CYCLE
-                    cycle_value = f"C{c_number}"   # Changed to C9, C14 format (recommended)
-
-                    if "COLLECTION_CYCLE" in df.columns:
-                        df["COLLECTION_CYCLE"] = (
-                            df["COLLECTION_CYCLE"]
-                            .fillna(cycle_value)
-                            .astype(str)
-                            .str.upper()
-                            .str.replace(r"\s+", "_", regex=True)
+                        manual_password = st.text_input(
+                            "Enter password:",
+                            value="",
+                            type="password",
+                            key=f"manual_pass_{i}_{filename}"
                         )
+
+                        col1, col2, col3 = st.columns([2, 1, 1])
+                        
+                        retry_btn = col1.button("🔓 Decrypt with this Password", key=f"retry_{i}")
+                        skip_btn = col2.button("⏭️ Skip this file", key=f"skip_{i}")
+
+                        if skip_btn:
+                            st.toast("⏭️ File skipped", icon="⏭️")
+                            st.info(f"Skipped: {filename}")
+                            continue
+
+                        if retry_btn:
+                            if not manual_password.strip():
+                                st.toast("❌ Please enter a password", icon="❗")
+                                st.error("Please enter a password")
+                            else:
+                                st.toast("🔄 Trying manual password...", icon="🔄")
+                                
+                                decrypted_io, error = decrypt_file(file_bytes, manual_password)
+
+                                if decrypted_io is None:
+                                    if "Wrong password" in error.lower():
+                                        st.toast("❌ Wrong Password - Try again", icon="🚫")
+                                        st.error("❌ The password you entered is still incorrect.")
+                                    else:
+                                        st.toast("⚠️ Decryption Failed", icon="⚠️")
+                                        st.error(f"Decryption error: {error}")
+                                else:
+                                    st.toast("✅ Decryption Successful!", icon="✅")
+                                    st.success(f"✅ Successfully decrypted **{filename}** with manual password!")
+                                    used_password = manual_password
                     else:
-                        df["COLLECTION_CYCLE"] = cycle_value
-                        with status_container:
+                        st.toast("✅ Auto password worked!", icon="✅")
+                        st.success(f"✅ Decrypted successfully with auto password: `{auto_password}`")
+
+                    # ====================== Process Decrypted File ======================
+                    if decrypted_io is None:
+                        continue
+
+                    try:
+                        df = pd.read_excel(decrypted_io, dtype=str, engine="openpyxl")
+
+                        with status:
+                            st.success(f"✅ File loaded — {df.shape[0]:,} rows × {df.shape[1]} columns")
+
+                        # Processing steps (unchanged)
+                        WL_STR_COLS = ["CUST_ID", "OFFICE_PH", "HOME_PH", "MOBILE_NO", "OB", "BOS", "AOD", "MAD", "PDA", "LPA", "PTP_AMT"]
+                        df = force_columns_to_str(df, WL_STR_COLS)
+
+                        WL_DATE_COLS = ["LAST_PAYMENT_DATE", "PTP_DATE", "BIRTHDATE", "LAST_DUE_DATE", "D_CUST_OPN", "Birthdate"]
+                        df = format_date_columns(df, date_cols=WL_DATE_COLS)
+
+                        df = clean_account_number_column(df, show_success=(i == 0), st=st)
+
+                        df, map_logs = apply_header_mapping(df, rules["mapping"], standard_order)
+
+                        cycle_value = c_number
+                        if "COLLECTION_CYCLE" in df.columns:
+                            df["COLLECTION_CYCLE"] = (
+                                df["COLLECTION_CYCLE"]
+                                .fillna(cycle_value)
+                                .astype(str)
+                                .str.upper()
+                                .str.replace(r"\s+", "_", regex=True)
+                            )
+                        else:
+                            df["COLLECTION_CYCLE"] = cycle_value
                             st.warning(f"➕ Created missing column: COLLECTION_CYCLE = {cycle_value}")
 
-                    with status_container:
-                        st.success(f"✅ Mapping applied → Final columns: {len(df.columns)}")
+                        with status:
+                            st.success(f"✅ Mapping applied → Final columns: {len(df.columns)}")
 
-                    # Preview
-                    with st.expander("🔍 Preview first 10 rows", expanded=False):
-                        st.dataframe(df.head(10), use_container_width=True, hide_index=True)
+                        with st.expander("🔍 Preview first 10 rows", expanded=False):
+                            st.dataframe(df.head(10), use_container_width=True, hide_index=True)
 
-                    with st.expander("📋 Mapping Logs", expanded=False):
-                        for log in map_logs:
-                            if "✅" in log:
-                                st.success(log)
-                            elif "➕" in log or "⚠️" in log:
-                                st.warning(log)
-                            else:
-                                st.info(log)
+                        results.append({
+                            "filename": filename,
+                            "dataframe": df,
+                            "c_number": c_number,
+                        })
+                        all_dfs.append(df)
 
-                    results.append({
-                        "filename": filename,
-                        "dataframe": df,
-                        "c_number": c_number,
-                    })
+                    except Exception as e:
+                        st.error(f"❌ Error processing file: {e}")
 
-                    all_dfs.append(df)   # Collect for overall
+        # ====================== Save Section ======================
+        if results:
+            st.subheader("💾 Save Processed Files")
+            timestamp = datetime.now().strftime("%m%d_%H%M")
 
-                except Exception as e:
-                    with status_container:
-                        st.error(f"❌ Failed to process: {e}")
+            if st.button("💾 Save All Individual Files", type="primary"):
+                files_to_save = {
+                    f"CYCLE{result['c_number']}_{timestamp}--{result['filename']}": result["dataframe"]
+                    for result in results
+                }
 
-    # ── Overall Combined Data Section ─────────────────────────────────────────
-    # if results and all_dfs:
-    #     st.subheader("📊 Overall Combined Worklist")
-        
-    #     overall_df = pd.concat(all_dfs, ignore_index=True)
-        
-    #     col1, col2, col3 = st.columns(3)
-    #     with col1:
-    #         st.metric("Total Files Processed", len(results))
-    #     with col2:
-    #         st.metric("Total Rows", f"{len(overall_df):,}")
-    #     with col3:
-    #         st.metric("Total Columns", len(overall_df.columns))
+                folder_path = save_to_folder(
+                    output_dir=OUTPUT_FOLDER,
+                    folder_name="WORKLIST",
+                    files=files_to_save,
+                    timestamp=timestamp,
+                )
+                st.success(f"✅ All files saved to: `{folder_path}`")
+                st.toast("💾 Files saved successfully!", icon="✅")
 
-    #     # Preview of combined data
-    #     with st.expander("🔍 Preview of Combined Data (first 10 rows)", expanded=False):
-    #         st.dataframe(overall_df.head(10), use_container_width=True, hide_index=True)
-
-    #     # Download combined file
-    #     output_bytes = BytesIO()
-    #     with pd.ExcelWriter(output_bytes, engine="openpyxl") as writer:
-    #         overall_df.to_excel(writer, index=False, sheet_name="Overall_Worklist")
-    #     output_bytes.seek(0)
-
-    #     st.download_button(
-    #         label="⬇️ Download Combined Overall Worklist",
-    #         data=output_bytes.getvalue(),
-    #         file_name=f"OVERALL_WORKLIST_{datetime.now().strftime('%m%d_%H%M')}.xlsx",
-    #         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    #         type="primary"
-    #     )
-
-    # ── Individual Save Section ───────────────────────────────────────────────
-    if not results:
-        return
-
-    st.subheader("💾 Save to Local files")
-    timestamp = datetime.now().strftime("%m%d_%H%M")
-
-    if st.button("💾 Save All Individual Files to Local Folder", type="primary"):
-        files_to_save = {
-            f"CYCLE{result['c_number']}_{timestamp}--{result['filename']}": result["dataframe"]
-            for result in results
-        }
-
-        folder_path = save_to_folder(
-            output_dir=OUTPUT_FOLDER,
-            folder_name="WORKLIST",
-            files=files_to_save,
-            timestamp=timestamp,
-        )
-        st.success(f"✅ Individual files saved to: `{folder_path}`")
-
-        # Also save the overall file to the same folder
-        if 'overall_df' in locals():
-            overall_filename = f"OVERALL_WORKLIST_{timestamp}.xlsx"
-            overall_path = save_to_folder(
-                output_dir=OUTPUT_FOLDER,
-                folder_name="WORKLIST",
-                files={overall_filename: overall_df},
-                timestamp=timestamp,
-            )
-            st.success(f"✅ Overall combined file also saved as: `{overall_filename}`")
-
-# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     worklist_app()
