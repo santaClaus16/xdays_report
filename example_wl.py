@@ -21,7 +21,6 @@ from utils import (
 
 MAPPING_PATH_WL = r"C:\Users\SPM\Desktop\eod_report\mapping\mapping_file_wl.xlsx"
 
-
 def decrypt_file(file_bytes, password):
     """Helper function to decrypt msoffcrypto file"""
     try:
@@ -36,10 +35,8 @@ def decrypt_file(file_bytes, password):
     except Exception as e:
         return None, str(e)
 
-
 # ====================== DEFAULT SHEETS ======================
 sheet_default = ["ActiveQry", "Active_updt", "Pulled Out", "!!DNC!!"]
-
 
 # ====================== CLEAN COLUMN NAMES ======================
 def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
@@ -55,6 +52,16 @@ def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = new_cols
     return df
 
+# ====================== SAFE DATAFRAME VALIDATOR ======================
+def safe_df(df, name):
+    """Defensive check for DataFrame validity"""
+    if df is None:
+        st.error(f"❌ Missing sheet: **{name}**")
+        return None
+    if not isinstance(df, pd.DataFrame):
+        st.error(f"❌ **{name}** is not a DataFrame (type: {type(df)})")
+        return None
+    return df
 
 # ====================== CACHED TEMPLATE LOADER ======================
 @st.cache_data(show_spinner="Loading template sheets...", ttl=600)
@@ -85,16 +92,14 @@ def load_template_sheets(template_file):
                     df = clean_column_names(df)
                     SHEET_DICT[sheet_name] = df
                     
-                    # st.success(f"✅ Loaded sheet: **{sheet_name}** ({len(df):,} rows)")
                 else:
                     st.warning(f"⚠️ Sheet '**{sheet_name}**' not found in template.")
         
         return SHEET_DICT
-    
+        
     except Exception as e:
         st.error(f"❌ Failed to load template: {e}")
         return {sheet: None for sheet in sheet_default}
-
 
 # ====================== MAIN APP ======================
 st.title("🔄 Worklist Processor")
@@ -106,7 +111,7 @@ upload_file_template = st.file_uploader(
     key="template_uploader"
 )
 
-# Load template with caching (this prevents reloading when uploading worklists)
+# Load template with caching
 SHEET_DICT = load_template_sheets(upload_file_template)
 
 if upload_file_template is None:
@@ -117,22 +122,25 @@ if upload_file_template is None:
 loaded_count = sum(1 for v in SHEET_DICT.values() if v is not None)
 st.success(f"✅ Template loaded successfully — {loaded_count}/{len(sheet_default)} default sheets ready")
 
-# Safe DataFrame extraction
-df_active       = SHEET_DICT.get("ActiveQry")
-df_active_updt  = SHEET_DICT.get("Active_updt")
-df_pulled_out   = SHEET_DICT.get("Pulled Out")
-df_dnc          = SHEET_DICT.get("!!DNC!!")
+# Safe DataFrame extraction with validation
+df_active = safe_df(SHEET_DICT.get("ActiveQry"), "ActiveQry")
+df_active_updt = safe_df(SHEET_DICT.get("Active_updt"), "Active_updt")
+df_pulled_out = safe_df(SHEET_DICT.get("Pulled Out"), "Pulled Out")
+df_dnc = safe_df(SHEET_DICT.get("!!DNC!!"), "!!DNC!!")
 
 if df_active is None:
     st.error("❌ Critical: 'ActiveQry' sheet is missing from template!")
+    st.stop()
 
 # ====================== LOAD MAPPING RULES (once) ======================
-# Assuming these are needed for apply_header_mapping
 try:
-    rules = load_mapping_file(MAPPING_PATH_WL)             # Load once
-    standard_order = rules.get("standard_order", []) if isinstance(rules, dict) else []
+    rules = load_mapping_file(MAPPING_PATH_WL)
+    if not isinstance(rules, dict):
+        st.error(f"❌ Mapping file returned non-dict: {type(rules)}")
+        rules = {"mapping": {}}
+    standard_order = rules.get("standard_order", [])
 except Exception as e:
-    st.error(f"Failed to load mapping rules: {e}")
+    st.error(f"❌ Failed to load mapping rules: {e}")
     rules = {"mapping": {}}
     standard_order = []
 
@@ -182,7 +190,7 @@ if uploaded_files:
                         st.toast("❌ Wrong Password!", icon="🚫")
                         st.error(f"❌ Wrong password for **{filename}**")
                     else:
-                        st.error(f"Decryption failed: {error}")
+                        st.error(f"❌ Decryption failed: {error}")
 
                     # Manual password input
                     st.markdown("### 🔓 Enter Correct Password Manually")
@@ -221,22 +229,26 @@ if uploaded_files:
 
                 try:
                     df = pd.read_excel(decrypted_io, dtype=str, engine="openpyxl")
-                    df = clean_column_names(df)   # Clean column names here too
+                    df = clean_column_names(df)
 
                     with status:
                         st.success(f"✅ Loaded — {df.shape[0]:,} rows × {df.shape[1]} columns")
 
-                    # Processing pipeline
+                    # Processing pipeline with defensive tuple handling
                     WL_STR_COLS = ["CUST_ID", "OFFICE_PH", "HOME_PH", "MOBILE_NO", "OB", "BOS", "AOD", "MAD", "PDA", "LPA", "PTP_AMT"]
-                    df = force_columns_to_str(df, WL_STR_COLS)
+                    result = force_columns_to_str(df, WL_STR_COLS)
+                    df = result[0] if isinstance(result, tuple) else result
 
                     WL_DATE_COLS = ["LAST_PAYMENT_DATE", "PTP_DATE", "BIRTHDATE", "LAST_DUE_DATE", "D_CUST_OPN", "Birthdate"]
-                    df = format_date_columns(df, date_cols=WL_DATE_COLS)
+                    result = format_date_columns(df, date_cols=WL_DATE_COLS)
+                    df = result[0] if isinstance(result, tuple) else result
 
-                    df = clean_account_number_column(df, show_success=(i == 0), st=st)
+                    result = clean_account_number_column(df, show_success=(i == 0), st=st)
+                    df = result[0] if isinstance(result, tuple) else result
 
-                    # Apply header mapping
-                    df, map_logs = apply_header_mapping(df, rules.get("mapping", {}), standard_order)
+                    # Apply header mapping with defensive handling
+                    result = apply_header_mapping(df, rules.get("mapping", {}), standard_order)
+                    df = result[0] if isinstance(result, tuple) else result
 
                     # Collection Cycle
                     cycle_value = c_number
@@ -267,10 +279,148 @@ if uploaded_files:
 
                 except Exception as e:
                     st.error(f"❌ Error processing {filename}: {str(e)}")
+                    st.exception(e)  # Show full traceback
 
         # Update progress
         progress_bar.progress((i + 1) / len(uploaded_files))
 
     st.success(f"🎉 Finished processing all {len(uploaded_files)} worklist files!")
-    
-    # Optional: Show final summary or download button here later
+
+    # ====================== DOWNLOAD SECTION ======================
+    if results:
+        st.markdown("---")
+        st.header("💾 Download Results")
+
+        # Combined file download
+        if len(results) > 1:
+            combined_df = pd.concat(all_dfs, ignore_index=True)
+            combined_filename = f"Combined_Worklists_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                for result in results:
+                    result["dataframe"].to_excel(writer, sheet_name=result["c_number"][:31], index=False)
+                combined_df.to_excel(writer, sheet_name='ALL', index=False)
+            output.seek(0)
+            
+            st.download_button(
+                label="📥 Download Combined Excel",
+                data=output.getvalue(),
+                file_name=combined_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        # Target Template Upload for OVERALL_CYCLE
+        st.markdown("---")
+        st.subheader("📝 Paste Combined Data to Template")
+        st.info("Upload a template containing an 'OVERALL_CYCLE' sheet. The system will map and paste the combined data matching its headers.")
+        
+        overall_template = st.file_uploader(
+            "Upload Output Template",
+            type=["xlsx"],
+            key="overall_template_uploader"
+        )
+
+        if overall_template:
+            with st.spinner("Pasting data to template..."):
+                try:
+                    import openpyxl
+                    from openpyxl.utils.dataframe import dataframe_to_rows
+                    
+                    # Ensure we have the combined data
+                    combined_df = pd.concat(all_dfs, ignore_index=True)
+                    
+                    wb = openpyxl.load_workbook(overall_template)
+                    if "OVERALL_CYCLE" not in wb.sheetnames:
+                        st.error("❌ The uploaded template does not contain an 'OVERALL_CYCLE' sheet.")
+                    else:
+                        ws = wb["OVERALL_CYCLE"]
+                        
+                        # Get headers from first row
+                        headers = [cell.value for cell in ws[1]]
+                        
+                        # Filter out None headers
+                        valid_headers = [h for h in headers if h is not None]
+                        
+                        # Create mapped DataFrame based on valid_headers
+                        mapped_data = {}
+                        for header in valid_headers:
+                            if header in combined_df.columns:
+                                mapped_data[header] = combined_df[header].tolist()
+                            else:
+                                mapped_data[header] = [None] * len(combined_df)
+                        
+                        mapped_df = pd.DataFrame(mapped_data)
+                        
+                        # Delete existing data rows (keep header)
+                        if ws.max_row > 1:
+                            ws.delete_rows(2, ws.max_row)
+                            
+                        # Append new data
+                        for r in dataframe_to_rows(mapped_df, index=False, header=False):
+                            ws.append(r)
+                            
+                        # Save modified workbook to memory
+                        output_template = BytesIO()
+                        wb.save(output_template)
+                        output_template.seek(0)
+                        
+                        st.success("✅ Successfully mapped and pasted data to 'OVERALL_CYCLE'!")
+                        
+                        st.download_button(
+                            label="📥 Download Updated Template",
+                            data=output_template.getvalue(),
+                            file_name=f"Updated_Template_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_updated_template"
+                        )
+                except Exception as e:
+                    st.error(f"❌ Failed to process template: {e}")
+
+        st.markdown("---")
+        st.subheader("📄 Individual Downloads")
+        # Individual downloads
+        for result in results:
+            csv_buffer = BytesIO()
+            result["dataframe"].to_csv(csv_buffer, index=False)
+            csv_buffer.seek(0)
+            
+            st.download_button(
+                label=f"📥 Download {result['filename'][:20]}...",
+                data=csv_buffer.getvalue(),
+                file_name=f"{result['c_number']}_processed.csv",
+                mime="text/csv",
+                key=f"dl_{result['filename']}"
+            )
+
+        # Summary stats
+        st.subheader("📊 Processing Summary")
+        summary_data = []
+        for result in results:
+            summary_data.append({
+                "File": result["filename"][:30],
+                "Cycle": result["c_number"],
+                "Rows": len(result["dataframe"]),
+                "Columns": len(result["dataframe"].columns)
+            })
+        
+        st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+
+        # Save to folder option (if utils.save_to_folder exists)
+        if 'save_to_folder' in globals():
+            save_path = st.text_input("📁 Save folder path:", value=r"C:\Users\SPM\Desktop\eod_report\processed")
+            if st.button("💾 Save All to Folder"):
+                try:
+                    os.makedirs(save_path, exist_ok=True)
+                    for result in results:
+                        filepath = os.path.join(save_path, f"{result['c_number']}_processed.xlsx")
+                        result["dataframe"].to_excel(filepath, index=False)
+                    st.success(f"✅ Saved {len(results)} files to {save_path}")
+                except Exception as e:
+                    st.error(f"❌ Save failed: {e}")
+
+else:
+    st.info("👆 Upload worklist files to start processing.")
+
+st.markdown("---")
+st.caption("✅ Code completed with error handling, downloads, and summary features.")

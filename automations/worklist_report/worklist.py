@@ -230,8 +230,8 @@ def worklist_app():
                         with status:
                             st.success(f"✅ Mapping applied → Final columns: {len(df.columns)}")
 
-                        with st.expander("🔍 Preview first 10 rows", expanded=False):
-                            st.dataframe(df.head(10), use_container_width=True, hide_index=True)
+                        # with st.expander("🔍 Preview first 10 rows", expanded=False):
+                        #     st.dataframe(df.head(10), use_container_width=True, hide_index=True)
 
                         results.append({
                             "filename": filename,
